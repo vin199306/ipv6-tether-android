@@ -50,23 +50,74 @@ jobs:
       - name: List build artifacts
         run: ls -lh dist/
 
+      # === 组装完整部署包（二进制 + 脚本 + 配置 + 文档） ===
+      - name: Assemble deploy package
+        run: |
+          mkdir -p ipv6-tether-pack
+          cp dist/send_ra ipv6-tether-pack/
+          cp dist/dhcp6_server ipv6-tether-pack/
+          cp scripts/ipv6_tether.sh ipv6-tether-pack/
+          cp scripts/ipv6_tether_boot.sh ipv6-tether-pack/
+          cp scripts/config.conf ipv6-tether-pack/
+          cp scripts/deploy.sh ipv6-tether-pack/
+          cp install.bat ipv6-tether-pack/
+          cp uninstall.bat ipv6-tether-pack/
+          cp README.md ipv6-tether-pack/
+          # 设置 shell 脚本权限（zip 保留权限）
+          chmod 755 ipv6-tether-pack/send_ra ipv6-tether-pack/dhcp6_server
+          chmod 755 ipv6-tether-pack/ipv6_tether.sh ipv6-tether-pack/ipv6_tether_boot.sh ipv6-tether-pack/deploy.sh
+          ls -lh ipv6-tether-pack/
+
+      - name: Create zip package
+        run: |
+          cd ipv6-tether-pack
+          zip -r ../ipv6-tether-android.zip .
+          cd ..
+          ls -lh ipv6-tether-android.zip
+
       # === 推送到 main 分支：上传为 workflow artifact，供下载 ===
-      - name: Upload ARMv7 binaries
+      - name: Upload deploy package artifact
         if: startsWith(github.ref, 'refs/heads/')
         uses: actions/upload-artifact@v4
         with:
-          name: ipv6-tether-armv7
-          path: |
-            dist/send_ra
-            dist/dhcp6_server
+          name: ipv6-tether-pack
+          path: ipv6-tether-android.zip
           retention-days: 30
 
-      # === 打 tag 时：创建 GitHub Release 并附加二进制 ===
+      # === 打 tag 时：创建 GitHub Release 并附加 zip + 单独二进制 ===
       - name: Create Release and Upload Assets
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            ipv6-tether-android.zip
             dist/send_ra
             dist/dhcp6_server
           generate_release_notes: true
+          body: |
+            ## IPv6 Tethering for Android 4.4
+
+            让 Android 4.4 设备通过 USB 共享 / WiFi 热点分发 IPv6。
+
+            ### 快速使用
+
+            1. 下载 `ipv6-tether-android.zip` 并解压
+            2. USB 连接手机，开启 USB 调试
+            3. 双击 `install.bat`（需已 root + 安装 Magisk）
+            4. 客户端访问 https://test-ipv6.com/ 验证 10/10
+
+            ### 包含文件
+
+            | 文件 | 说明 |
+            |------|------|
+            | send_ra | RA 发送器 (ARMv7) |
+            | dhcp6_server | DHCPv6 服务器 (ARMv7) |
+            | ipv6_tether.sh | 主控脚本 |
+            | ipv6_tether_boot.sh | Magisk 开机自启 |
+            | config.conf | 配置文件 |
+            | deploy.sh | 设备端部署脚本 |
+            | install.bat | PC 端一键安装 |
+            | uninstall.bat | PC 端一键卸载 |
+            | README.md | 使用文档 |
+
+            详见 README.md
