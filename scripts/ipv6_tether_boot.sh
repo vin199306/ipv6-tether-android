@@ -23,11 +23,21 @@ log() {
 }
 
 # Single instance check - prevent duplicate when both post-fs-data.d and service.d run
+# Verify the PID is actually a running ipv6_tether_boot process (kill -0 alone is
+# unreliable on Android 4.4: stale lockfiles or recycled PIDs cause false positives).
 if [ -f "$LOCKFILE" ]; then
     OLD_PID=$(busybox cat "$LOCKFILE" 2>/dev/null)
     if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
-        echo "[$(date '+%m-%d %H:%M:%S')] already running (PID $OLD_PID), exit" >> "$LOG"
-        exit 0
+        OLD_CMD=$(busybox cat "/proc/$OLD_PID/cmdline" 2>/dev/null | busybox tr '\0' ' ')
+        case "$OLD_CMD" in
+            *ipv6_tether_boot*)
+                echo "[$(date '+%m-%d %H:%M:%S')] already running (PID $OLD_PID), exit" >> "$LOG"
+                exit 0
+                ;;
+        esac
+        echo "[$(date '+%m-%d %H:%M:%S')] stale lockfile (PID $OLD_PID not boot script: '$OLD_CMD'), reclaiming" >> "$LOG"
+    else
+        echo "[$(date '+%m-%d %H:%M:%S')] stale lockfile (PID $OLD_PID gone), reclaiming" >> "$LOG"
     fi
 fi
 echo $$ > "$LOCKFILE"
