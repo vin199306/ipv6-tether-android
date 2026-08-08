@@ -9,6 +9,7 @@ DHCP6_BIN="/data/local/tmp/dhcp6_server"
 PIDFILE="/data/local/tmp/ipv6_ra.pid"
 NDPIDFILE="/data/local/tmp/ipv6_ndp.pid"
 DHCP6PIDFILE="/data/local/tmp/ipv6_dhcp6.pid"
+STATEFILE="/data/local/tmp/ipv6_state"
 
 # 默认值（config 不存在时使用）
 IFACE_UP="bridge1"
@@ -61,6 +62,22 @@ start() {
     echo "[*] WAN iface: $WAN_ACTIVE"
     echo "[*] WAN prefix: ${PREFIX}::/64"
 
+    # Clean up stale state from a previous WAN/prefix (handles WAN switch)
+    SAVED_WAN=""; SAVED_PREFIX=""
+    [ -f "$STATEFILE" ] && . "$STATEFILE"
+    if [ -n "$SAVED_PREFIX" ] && [ "$SAVED_PREFIX" != "$PREFIX" ]; then
+        echo "[*] WAN switched: cleaning old prefix ${SAVED_PREFIX}::/64"
+        ip -6 addr del "${SAVED_PREFIX}::1/64" dev "$IFACE_UP" 2>/dev/null
+        # Clean NDP proxy on ALL candidate WAN interfaces (old WAN may differ)
+        for w in $IFACE_WAN; do
+            ip -6 neigh show proxy dev "$w" 2>/dev/null \
+                | busybox awk '{print $1}' \
+                | while read a; do
+                    ip -6 neigh del proxy "$a" dev "$w" 2>/dev/null
+                done
+        done
+    fi
+
     ip -6 addr add "${PREFIX}::1/64" dev "$IFACE_UP" 2>/dev/null
     echo "[*] $IFACE_UP IPv6: ${PREFIX}::1/64"
 
@@ -105,6 +122,8 @@ start() {
         echo $! > "$NDPIDFILE"
         echo "[*] NDP proxy loop started (PID $(cat $NDPIDFILE))"
     fi
+    echo "SAVED_WAN=$WAN_ACTIVE" > "$STATEFILE"
+    echo "SAVED_PREFIX=$PREFIX" >> "$STATEFILE"
     echo "[*] IPv6 tethering is ACTIVE"
 }
 
@@ -118,6 +137,11 @@ _ndp() {
             | busybox grep -v FAILED \
             | busybox awk '{print $1}' \
             | while read addr; do
+                # Only proxy addresses in current prefix (skip stale addrs from old WAN)
+                case "$addr" in
+                    "${PREFIX}:"*) ;;
+                    *) continue ;;
+                esac
                 case "$addr" in
                     "${PREFIX}::1") continue ;;
                 esac
@@ -146,16 +170,22 @@ stop() {
         rm -f "$NDPIDFILE"
         echo "[*] NDP loop stopped"
     fi
-    detect_wan
-    if [ -n "$WAN_ACTIVE" ]; then
-        ip -6 neigh show proxy dev "$WAN_ACTIVE" 2>/dev/null \
+    # Read saved state (may differ from current detect_wan if WAN switched)
+    SAVED_WAN=""; SAVED_PREFIX=""
+    [ -f "$STATEFILE" ] && . "$STATEFILE"
+    # Clean NDP proxy on ALL candidate WAN interfaces
+    for w in $IFACE_WAN; do
+        ip -6 neigh show proxy dev "$w" 2>/dev/null \
             | busybox awk '{print $1}' \
             | while read addr; do
-                ip -6 neigh del proxy "$addr" dev "$WAN_ACTIVE" 2>/dev/null
+                ip -6 neigh del proxy "$addr" dev "$w" 2>/dev/null
             done
-    fi
+    done
     echo "[*] NDP proxy entries cleaned"
-    [ -n "$PREFIX" ] && ip -6 addr del "${PREFIX}::1/64" dev "$IFACE_UP" 2>/dev/null
+    [ -n "$SAVED_PREFIX" ] && ip -6 addr del "${SAVED_PREFIX}::1/64" dev "$IFACE_UP" 2>/dev/null
+    detect_wan
+    [ -n "$PREFIX" ] && [ "$PREFIX" != "$SAVED_PREFIX" ] && ip -6 addr del "${PREFIX}::1/64" dev "$IFACE_UP" 2>/dev/null
+    rm -f "$STATEFILE"
     echo "[*] IPv6 tethering STOPPED"
 }
 
