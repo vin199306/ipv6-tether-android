@@ -23,6 +23,9 @@ jobs:
         with:
           go-version: '1.25'
 
+      - name: Prepare dist directory
+        run: mkdir -p dist
+
       - name: Build send_ra (ARMv7)
         env:
           GOOS: linux
@@ -31,8 +34,7 @@ jobs:
           CGO_ENABLED: '0'
         run: |
           cd send_ra
-          go build -ldflags="-s -w" -o ../send_ra send_ra.go
-          cd ..
+          go build -ldflags="-s -w" -o ../dist/send_ra send_ra.go
 
       - name: Build dhcp6_server (ARMv7)
         env:
@@ -42,8 +44,7 @@ jobs:
           CGO_ENABLED: '0'
         run: |
           cd dhcp6_server
-          go build -ldflags="-s -w" -o ../dhcp6_server dhcp6_server.go
-          cd ..
+          go build -ldflags="-s -w" -o ../dist/dhcp6_server dhcp6_server.go
 
       - name: Build send_ra (ARM64)
         env:
@@ -52,8 +53,7 @@ jobs:
           CGO_ENABLED: '0'
         run: |
           cd send_ra
-          go build -ldflags="-s -w" -o ../send_ra_arm64 send_ra.go
-          cd ..
+          go build -ldflags="-s -w" -o ../dist/send_ra_arm64 send_ra.go
 
       - name: Build dhcp6_server (ARM64)
         env:
@@ -62,11 +62,10 @@ jobs:
           CGO_ENABLED: '0'
         run: |
           cd dhcp6_server
-          go build -ldflags="-s -w" -o ../dhcp6_server_arm64 dhcp6_server.go
-          cd ..
+          go build -ldflags="-s -w" -o ../dist/dhcp6_server_arm64 dhcp6_server.go
 
       - name: List build artifacts
-        run: ls -lh send_ra dhcp6_server send_ra_arm64 dhcp6_server_arm64
+        run: ls -lh dist/
 
       # === 推送到 main 分支：上传为 workflow artifact，供下载 ===
       - name: Upload ARMv7 binaries
@@ -75,8 +74,8 @@ jobs:
         with:
           name: ipv6-tether-armv7
           path: |
-            send_ra
-            dhcp6_server
+            dist/send_ra
+            dist/dhcp6_server
           retention-days: 30
 
       - name: Upload ARM64 binaries
@@ -85,8 +84,8 @@ jobs:
         with:
           name: ipv6-tether-arm64
           path: |
-            send_ra_arm64
-            dhcp6_server_arm64
+            dist/send_ra_arm64
+            dist/dhcp6_server_arm64
           retention-days: 30
 
       # === 打 tag 时：创建 GitHub Release 并附加二进制 ===
@@ -95,8 +94,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            send_ra
-            dhcp6_server
-            send_ra_arm64
-            dhcp6_server_arm64
+            dist/send_ra
+            dist/dhcp6_server
+            dist/send_ra_arm64
+            dist/dhcp6_server_arm64
           generate_release_notes: true
