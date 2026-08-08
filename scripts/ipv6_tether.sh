@@ -60,7 +60,7 @@ start() {
     if [ -f "$PIDFILE" ] && kill -0 $(cat "$PIDFILE") 2>/dev/null; then
         echo "[*] RA already running (PID $(cat $PIDFILE))"
     else
-        busybox setsid "$RA_BIN" "$IFACE_UP" "${PREFIX}::" "$RA_INTERVAL" "$DNS_SERVERS" 0<&- &
+        busybox setsid "$RA_BIN" "$IFACE_UP" "${PREFIX}::" "$RA_INTERVAL" "$DNS_SERVERS" 0<&- >/dev/null 2>&1 &
         echo $! > "$PIDFILE"
         echo "[*] RA sender started (PID $(cat $PIDFILE))"
     fi
@@ -69,7 +69,7 @@ start() {
         if [ -f "$DHCP6PIDFILE" ] && kill -0 $(cat "$DHCP6PIDFILE") 2>/dev/null; then
             echo "[*] DHCPv6 already running (PID $(cat $DHCP6PIDFILE))"
         else
-            busybox setsid "$DHCP6_BIN" "$IFACE_UP" "${PREFIX}::" "$DNS_SERVERS" 0<&- &
+            busybox setsid "$DHCP6_BIN" "$IFACE_UP" "${PREFIX}::" "$DNS_SERVERS" 0<&- >/dev/null 2>&1 &
             echo $! > "$DHCP6PIDFILE"
             echo "[*] DHCPv6 server started (PID $(cat $DHCP6PIDFILE))"
         fi
@@ -78,7 +78,7 @@ start() {
     if [ -f "$NDPIDFILE" ] && kill -0 $(cat "$NDPIDFILE") 2>/dev/null; then
         echo "[*] NDP loop already running (PID $(cat $NDPIDFILE))"
     else
-        NDP_INTERVAL_ARG="$NDP_INTERVAL" busybox setsid sh "$0" _ndp 0<&- &
+        NDP_INTERVAL_ARG="$NDP_INTERVAL" busybox setsid sh "$0" _ndp 0<&- >/dev/null 2>&1 &
         echo $! > "$NDPIDFILE"
         echo "[*] NDP proxy loop started (PID $(cat $NDPIDFILE))"
     fi
