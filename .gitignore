@@ -1,0 +1,20 @@
+# 编译产物（ARM 二进制，不纳入版本控制）
+send_ra
+dhcp6_server
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go 构建缓存
+vendor/
+
+# IDE / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# PID / 日志
+*.pid
+*.log
