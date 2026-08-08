@@ -26,6 +26,7 @@ jobs:
       - name: Prepare dist directory
         run: mkdir -p dist
 
+      # 仅编译 ARMv7（适配 Android 4.4 绝大多数设备）
       - name: Build send_ra (ARMv7)
         env:
           GOOS: linux
@@ -46,24 +47,6 @@ jobs:
           cd dhcp6_server
           go build -ldflags="-s -w" -o ../dist/dhcp6_server dhcp6_server.go
 
-      - name: Build send_ra (ARM64)
-        env:
-          GOOS: linux
-          GOARCH: arm64
-          CGO_ENABLED: '0'
-        run: |
-          cd send_ra
-          go build -ldflags="-s -w" -o ../dist/send_ra_arm64 send_ra.go
-
-      - name: Build dhcp6_server (ARM64)
-        env:
-          GOOS: linux
-          GOARCH: arm64
-          CGO_ENABLED: '0'
-        run: |
-          cd dhcp6_server
-          go build -ldflags="-s -w" -o ../dist/dhcp6_server_arm64 dhcp6_server.go
-
       - name: List build artifacts
         run: ls -lh dist/
 
@@ -78,16 +61,6 @@ jobs:
             dist/dhcp6_server
           retention-days: 30
 
-      - name: Upload ARM64 binaries
-        if: startsWith(github.ref, 'refs/heads/')
-        uses: actions/upload-artifact@v4
-        with:
-          name: ipv6-tether-arm64
-          path: |
-            dist/send_ra_arm64
-            dist/dhcp6_server_arm64
-          retention-days: 30
-
       # === 打 tag 时：创建 GitHub Release 并附加二进制 ===
       - name: Create Release and Upload Assets
         if: startsWith(github.ref, 'refs/tags/')
@@ -96,6 +69,4 @@ jobs:
           files: |
             dist/send_ra
             dist/dhcp6_server
-            dist/send_ra_arm64
-            dist/dhcp6_server_arm64
           generate_release_notes: true
