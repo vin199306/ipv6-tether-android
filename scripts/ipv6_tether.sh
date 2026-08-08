@@ -17,6 +17,7 @@ IFACE_UP="bridge1"
 # IFACE_WAN 支持多个接口（空格分隔），按优先级自动检测哪个有 IPv6
 IFACE_WAN="rmnet_data0 wlan0"
 RA_INTERVAL="3"
+RA_MTU="1280"
 DNS_SERVERS="2400:3200::1,2400:3200:baba::1"
 DHCP6_ENABLE="1"
 NDP_INTERVAL="5"
@@ -41,12 +42,13 @@ _extract_prefix() {
 }
 
 # detect_wan: 优先使用默认路由接口，其次遍历候选 WAN 接口
+# 注意：排除 IFACE_UP（bridge1），防止误选下行接口
 detect_wan() {
     WAN_ACTIVE=""
     PREFIX=""
     # 1. 优先检查 IPv6 默认路由所在的接口（反映系统实际选择的 WAN）
     DEFAULT_IFACE=$(ip -6 route show default 2>/dev/null | busybox awk '{print $5}' | busybox head -1)
-    if [ -n "$DEFAULT_IFACE" ]; then
+    if [ -n "$DEFAULT_IFACE" ] && [ "$DEFAULT_IFACE" != "$IFACE_UP" ]; then
         PREF=$(_extract_prefix "$DEFAULT_IFACE")
         if [ -n "$PREF" ]; then
             WAN_ACTIVE="$DEFAULT_IFACE"
@@ -144,7 +146,8 @@ start() {
     if [ -n "$OLD_PREFIX_FOR_RA" ]; then
         OLD_PREFIX_ARG="${OLD_PREFIX_FOR_RA}::"
     fi
-    busybox setsid "$RA_BIN" "$IFACE_UP" "${PREFIX}::" "$RA_INTERVAL" "$DNS_SERVERS" "$OLD_PREFIX_ARG" 0<&- >/dev/null 2>&1 &
+    # 参数顺序: iface prefix interval dns mtu old_prefix
+    busybox setsid "$RA_BIN" "$IFACE_UP" "${PREFIX}::" "$RA_INTERVAL" "$DNS_SERVERS" "$RA_MTU" "$OLD_PREFIX_ARG" 0<&- >/dev/null 2>&1 &
     echo $! > "$PIDFILE"
     echo "[*] RA sender started (PID $(cat $PIDFILE))"
     if [ -n "$OLD_PREFIX_FOR_RA" ]; then
@@ -152,22 +155,24 @@ start() {
     fi
 
     if [ "$DHCP6_ENABLE" = "1" ]; then
-        if [ -f "$DHCP6PIDFILE" ] && kill -0 $(cat "$DHCP6PIDFILE") 2>/dev/null; then
-            echo "[*] DHCPv6 already running (PID $(cat $DHCP6PIDFILE))"
-        else
-            busybox setsid "$DHCP6_BIN" "$IFACE_UP" "${PREFIX}::" "$DNS_SERVERS" 0<&- >/dev/null 2>&1 &
-            echo $! > "$DHCP6PIDFILE"
-            echo "[*] DHCPv6 server started (PID $(cat $DHCP6PIDFILE))"
-        fi
+        # Kill ALL existing dhcp6_server processes before starting new one
+        ps | busybox grep dhcp6_server | busybox grep -v grep | busybox awk '{print $2}' | while read pid; do
+            kill "$pid" 2>/dev/null
+        done
+        rm -f "$DHCP6PIDFILE"
+        busybox setsid "$DHCP6_BIN" "$IFACE_UP" "${PREFIX}::" "$DNS_SERVERS" 0<&- >/dev/null 2>&1 &
+        echo $! > "$DHCP6PIDFILE"
+        echo "[*] DHCPv6 server started (PID $(cat $DHCP6PIDFILE))"
     fi
 
-    if [ -f "$NDPIDFILE" ] && kill -0 $(cat "$NDPIDFILE") 2>/dev/null; then
-        echo "[*] NDP loop already running (PID $(cat $NDPIDFILE))"
-    else
-        NDP_INTERVAL_ARG="$NDP_INTERVAL" busybox setsid sh "$0" _ndp 0<&- >/dev/null 2>&1 &
-        echo $! > "$NDPIDFILE"
-        echo "[*] NDP proxy loop started (PID $(cat $NDPIDFILE))"
-    fi
+    # Kill ALL existing _ndp processes before starting new one
+    ps | busybox grep "$0 _ndp" | busybox grep -v grep | busybox awk '{print $2}' | while read pid; do
+        kill "$pid" 2>/dev/null
+    done
+    rm -f "$NDPIDFILE"
+    NDP_INTERVAL_ARG="$NDP_INTERVAL" busybox setsid sh "$0" _ndp 0<&- >/dev/null 2>&1 &
+    echo $! > "$NDPIDFILE"
+    echo "[*] NDP proxy loop started (PID $(cat $NDPIDFILE))"
     # WAN 切换监控（检测到 WAN 接口/前缀变化时自动 restart）
     if [ -f "$WATCHPIDFILE" ] && kill -0 $(cat "$WATCHPIDFILE") 2>/dev/null; then
         echo "[*] Watch loop already running (PID $(cat $WATCHPIDFILE))"
@@ -205,9 +210,15 @@ _ndp() {
                         ;;
                     *)
                         # 旧前缀的地址：提取主机标识符，推算当前前缀的地址并代理
-                        # 这样 WAN 切换后能自动代理客户端的新前缀地址
-                        HOST_ID=$(echo "$addr" | busybox awk -F: '{print $5":"$6":"$7":"$8}')
-                        if [ -n "$HOST_ID" ]; then
+                        # 先用 sed 将 :: 展开为完整 8 段地址，再用 awk 提取后4段
+                        FULL_ADDR=$(echo "$addr" | busybox sed 's/::/:0000:0000:0000:0000:0000:0000:0000:0000/' | busybox awk -F: '{n=split($0,a,":"); if(n>=8) print a[5]":"a[6]":"a[7]":"a[8]; else print ""}')
+                        if [ -n "$FULL_ADDR" ]; then
+                            HOST_ID=$(echo "$FULL_ADDR" | busybox awk -F: '{print $1":"$2":"$3":"$4}')
+                            # 验证主机标识符非全 0（避免 ::1 这种特殊地址）
+                            case "$HOST_ID" in
+                                0000:0000:0000:*) continue ;;
+                                0000:0000:*) continue ;;
+                            esac
                             NEW_ADDR="${PREFIX}:${HOST_ID}"
                             case "$NEW_ADDR" in
                                 "${PREFIX}::1") continue ;;
@@ -224,7 +235,7 @@ _ndp() {
     done
 }
 
-# _watch: 持续监控 WAN 接口/前缀变化，检测到变化时自动 restart 服务
+# _watch: 持续监控 WAN 接口/前缀变化，检测到变化时异步触发 restart
 _watch() {
     WATCH_INTERVAL="${WATCH_INTERVAL:-10}"
     while true; do
@@ -236,19 +247,26 @@ _watch() {
         # 检测当前 WAN
         detect_wan
         [ -z "$WAN_ACTIVE" ] && continue
-        # WAN 接口或前缀发生变化 → 触发 restart
+        # WAN 接口或前缀发生变化 → 异步触发 restart（避免自杀问题）
         if [ "$WAN_ACTIVE" != "$SAVED_WAN" ] || [ "$PREFIX" != "$SAVED_PREFIX" ]; then
             echo "[watch] WAN changed: $SAVED_WAN/$SAVED_PREFIX -> $WAN_ACTIVE/$PREFIX, restarting..." > /dev/kmsg 2>/dev/null
-            # restart 会杀掉所有进程（包括本 watch），然后 start 会重新启动 watch
-            sh "$0" restart 0<&- >/dev/null 2>&1
+            # 异步执行 restart，本进程立即退出（restart 的 stop 会杀掉 _watch）
+            busybox setsid sh "$0" restart 0<&- >/dev/null 2>&1 &
             exit 0
         fi
     done
 }
 
 stop() {
+    # 先杀 _watch 进程，防止 stop 期间 _watch 触发 restart 导致竞态
+    if [ -f "$WATCHPIDFILE" ]; then
+        kill $(cat "$WATCHPIDFILE") 2>/dev/null
+        rm -f "$WATCHPIDFILE"
+    fi
+    ps | busybox grep "$0 _watch" | busybox grep -v grep | busybox awk '{print $2}' | while read pid; do
+        kill "$pid" 2>/dev/null
+    done
     # Kill RA sender by PIDFILE, then sweep ALL remaining send_ra processes
-    # (prevents zombie RA processes from conflicting with new one)
     if [ -f "$PIDFILE" ]; then
         kill $(cat "$PIDFILE") 2>/dev/null
         rm -f "$PIDFILE"
@@ -260,22 +278,22 @@ stop() {
     if [ -f "$DHCP6PIDFILE" ]; then
         kill $(cat "$DHCP6PIDFILE") 2>/dev/null
         rm -f "$DHCP6PIDFILE"
-        echo "[*] DHCPv6 server stopped"
     fi
     # Kill ALL dhcp6_server processes
     ps | busybox grep dhcp6_server | busybox grep -v grep | busybox awk '{print $2}' | while read pid; do
         kill "$pid" 2>/dev/null
     done
+    echo "[*] DHCPv6 server stopped"
     if [ -f "$NDPIDFILE" ]; then
         kill $(cat "$NDPIDFILE") 2>/dev/null
         rm -f "$NDPIDFILE"
-        echo "[*] NDP loop stopped"
     fi
-    if [ -f "$WATCHPIDFILE" ]; then
-        kill $(cat "$WATCHPIDFILE") 2>/dev/null
-        rm -f "$WATCHPIDFILE"
-        echo "[*] Watch loop stopped"
-    fi
+    # Kill ALL _ndp processes
+    ps | busybox grep "$0 _ndp" | busybox grep -v grep | busybox awk '{print $2}' | while read pid; do
+        kill "$pid" 2>/dev/null
+    done
+    echo "[*] NDP loop stopped"
+    echo "[*] Watch loop stopped"
     # Read saved state (may differ from current detect_wan if WAN switched)
     SAVED_WAN=""; SAVED_PREFIX=""
     [ -f "$STATEFILE" ] && . "$STATEFILE"

@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"encoding/binary"
@@ -11,6 +11,9 @@ import (
 
 	"golang.org/x/net/ipv6"
 )
+
+// DUID-LLT 时间戳基准：2000-01-01 00:00:00 UTC
+var duidEpoch = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // DHCPv6 消息类型
 const (
@@ -162,7 +165,11 @@ func buildServerID(mac net.HardwareAddr) []byte {
 	duid := make([]byte, 0, 14)
 	duid = append(duid, 0x00, 0x02) // type=2 (DUID-LLT)
 	duid = append(duid, 0x00, 0x01) // hwtype=1 (Ethernet)
-	duid = append(duid, 0x00, 0x00, 0x00, 0x01)
+	// 时间戳：自 2000-01-01 起的秒数（RFC 3315）
+	ts := uint32(time.Since(duidEpoch).Seconds())
+	var tsBytes [4]byte
+	binary.BigEndian.PutUint32(tsBytes[:], ts)
+	duid = append(duid, tsBytes[:]...)
 	duid = append(duid, mac...)
 	return duid
 }
@@ -243,8 +250,9 @@ func buildOption(code uint16, data []byte) []byte {
 func buildIANA(iaid uint32, addr net.IP, prefLife, validLife uint32) []byte {
 	iaNaData := make([]byte, 12)
 	binary.BigEndian.PutUint32(iaNaData[0:4], iaid)
-	binary.BigEndian.PutUint32(iaNaData[4:8], prefLife/2)
-	binary.BigEndian.PutUint32(iaNaData[8:12], prefLife*3/4)
+	// RFC 3315: T1 = 0.5 * valid_lifetime, T2 = 0.8 * valid_lifetime
+	binary.BigEndian.PutUint32(iaNaData[4:8], validLife/2)
+	binary.BigEndian.PutUint32(iaNaData[8:12], validLife*4/5)
 
 	iaAddrData := make([]byte, 24)
 	copy(iaAddrData[0:16], addr.To16())
@@ -436,5 +444,3 @@ func msgTypeName(b byte) string {
 		return fmt.Sprintf("MSG(%d)", b)
 	}
 }
-
-var _ = time.Second

@@ -74,8 +74,6 @@ cp "$TMP/config.conf" "$TMP/ipv6_config.conf"
 echo "[3/5] Installing autostart..."
 if [ "$BOOT_AUTOSTART" = "1" ]; then
     # Primary: inject into /system/etc/init.qcom.post_boot.sh (most reliable on Android 4.4)
-    # This script is executed by init.qcom.rc service qcom-post-boot on boot.
-    # Magisk service.d/post-fs-data.d are unreliable on Android 4.4 (may not trigger).
     POST_BOOT_OK=0
     if [ -f "$POST_BOOT" ]; then
         # Remount /system rw if needed
@@ -84,11 +82,9 @@ if [ "$BOOT_AUTOSTART" = "1" ]; then
         if [ ! -f "${POST_BOOT}.bak" ]; then
             cp "$POST_BOOT" "${POST_BOOT}.bak"
         fi
-        # Remove ALL old injections (handles duplicates from previous deploys)
-        # Use index() for literal string match (regex treats () as groups)
+        # Remove ALL old injections: delete from marker line to EOF (robust against any injection size)
         busybox awk -v m="$AUTOSTART_MARKER" '
-            index($0,m) { skip=2; next }
-            skip>0 { skip--; next }
+            index($0,m) { exit }
             { print }
         ' "$POST_BOOT" > "${POST_BOOT}.new" 2>/dev/null
         if [ -s "${POST_BOOT}.new" ]; then
@@ -105,6 +101,8 @@ if [ "$BOOT_AUTOSTART" = "1" ]; then
         else
             echo "  WARNING: failed to inject into $POST_BOOT"
         fi
+        # Restore /system to read-only (security best practice)
+        mount -o ro,remount /system 2>/dev/null
     else
         echo "  WARNING: $POST_BOOT not found"
     fi

@@ -55,8 +55,8 @@ for i in $(busybox seq 1 90); do
             break 2
         fi
     done
-    sleep 10
     WAIT_COUNT=$((WAIT_COUNT + 10))
+    sleep 10
 done
 
 # Final check
@@ -92,10 +92,8 @@ log "starting ipv6_tether service..."
 sh "$SCRIPT" start >> "$LOG" 2>&1
 log "service start attempted"
 
-PREV_PREFIX=$(sh "$SCRIPT" _getprefix 2>/dev/null)
-log "monitor started, initial prefix: ${PREV_PREFIX}::"
-
-# Step 4: Monitor loop
+# Step 4: Monitor loop — 仅负责进程存活检查和 bridge1 存在性
+# WAN 切换由 ipv6_tether.sh 内的 _watch 循环负责，避免双重 restart 竞态
 SERVICE_RUNNING=1
 while true; do
     sleep 15
@@ -117,37 +115,33 @@ while true; do
         sleep 2
         sh "$SCRIPT" start >> "$LOG" 2>&1
         SERVICE_RUNNING=1
-        PREV_PREFIX=$(sh "$SCRIPT" _getprefix 2>/dev/null)
-        log "service restarted, prefix: ${PREV_PREFIX}::"
         continue
     fi
 
-    # Check prefix change (also catches WAN interface switch, e.g. WiFi <-> mobile)
-    CUR_PREFIX=$(sh "$SCRIPT" _getprefix 2>/dev/null)
-    if [ -n "$CUR_PREFIX" ] && [ "$CUR_PREFIX" != "$PREV_PREFIX" ]; then
-        log "prefix changed: ${PREV_PREFIX} -> ${CUR_PREFIX}, restarting..."
-        sh "$SCRIPT" restart >> "$LOG" 2>&1
-        PREV_PREFIX="$CUR_PREFIX"
-        continue
-    fi
+    # Check if daemons died (WAN 切换由 _watch 负责，此处只处理进程崩溃)
+    RA_PID=$(cat /data/local/tmp/ipv6_ra.pid 2>/dev/null)
+    DHCP6_PID=$(cat /data/local/tmp/ipv6_dhcp6.pid 2>/dev/null)
+    NDP_PID=$(cat /data/local/tmp/ipv6_ndp.pid 2>/dev/null)
+    NEED_RESTART=0
 
-    # Check if daemons died
-    if [ ! -f /data/local/tmp/ipv6_ra.pid ] || ! kill -0 $(cat /data/local/tmp/ipv6_ra.pid 2>/dev/null) 2>/dev/null; then
+    if [ -z "$RA_PID" ] || ! kill -0 "$RA_PID" 2>/dev/null; then
         log "RA sender died, restarting..."
-        sh "$SCRIPT" restart >> "$LOG" 2>&1
-        PREV_PREFIX=$(sh "$SCRIPT" _getprefix 2>/dev/null)
-        continue
-    fi
-    if [ ! -f /data/local/tmp/ipv6_dhcp6.pid ] || ! kill -0 $(cat /data/local/tmp/ipv6_dhcp6.pid 2>/dev/null) 2>/dev/null; then
+        NEED_RESTART=1
+    elif [ -z "$DHCP6_PID" ] || ! kill -0 "$DHCP6_PID" 2>/dev/null; then
         log "DHCPv6 died, restarting..."
-        sh "$SCRIPT" restart >> "$LOG" 2>&1
-        PREV_PREFIX=$(sh "$SCRIPT" _getprefix 2>/dev/null)
-        continue
-    fi
-    if [ ! -f /data/local/tmp/ipv6_ndp.pid ] || ! kill -0 $(cat /data/local/tmp/ipv6_ndp.pid 2>/dev/null) 2>/dev/null; then
+        NEED_RESTART=1
+    elif [ -z "$NDP_PID" ] || ! kill -0 "$NDP_PID" 2>/dev/null; then
         log "NDP loop died, restarting..."
+        NEED_RESTART=1
+    fi
+
+    if [ "$NEED_RESTART" = "1" ]; then
         sh "$SCRIPT" restart >> "$LOG" 2>&1
-        PREV_PREFIX=$(sh "$SCRIPT" _getprefix 2>/dev/null)
-        continue
+        # 验证 restart 后进程确实启动
+        sleep 2
+        RA_PID=$(cat /data/local/tmp/ipv6_ra.pid 2>/dev/null)
+        if [ -z "$RA_PID" ] || ! kill -0 "$RA_PID" 2>/dev/null; then
+            log "WARNING: RA sender still not running after restart"
+        fi
     fi
 done
