@@ -2,6 +2,8 @@
 # 注意: 只排除无扩展名的二进制，保留 send_ra/ dhcp6_server/ 源码目录
 /send_ra_bin
 /dhcp6_server_bin
+/send_ra/send_ra
+/dhcp6_server/dhcp6_server
 *.exe
 *.dll
 *.so

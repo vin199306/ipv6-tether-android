@@ -9,6 +9,7 @@ DHCP6_BIN="/data/local/tmp/dhcp6_server"
 PIDFILE="/data/local/tmp/ipv6_ra.pid"
 NDPIDFILE="/data/local/tmp/ipv6_ndp.pid"
 DHCP6PIDFILE="/data/local/tmp/ipv6_dhcp6.pid"
+WATCHPIDFILE="/data/local/tmp/ipv6_watch.pid"
 STATEFILE="/data/local/tmp/ipv6_state"
 
 # 默认值（config 不存在时使用）
@@ -19,6 +20,7 @@ RA_INTERVAL="3"
 DNS_SERVERS="2400:3200::1,2400:3200:baba::1"
 DHCP6_ENABLE="1"
 NDP_INTERVAL="5"
+WATCH_INTERVAL="10"
 
 # 加载配置
 [ -f "$CONF" ] && . "$CONF"
@@ -27,17 +29,34 @@ NDP_INTERVAL="5"
 WAN_ACTIVE=""
 PREFIX=""
 
-# detect_wan: 遍历候选 WAN 接口，找到第一个有 global IPv6 的，设置 WAN_ACTIVE 和 PREFIX
+# _extract_prefix: 从接口的 global IPv6 地址中提取 /64 前缀（前4段）
+_extract_prefix() {
+    ip -6 addr show "$1" 2>/dev/null \
+        | busybox grep 'scope global' \
+        | busybox grep -v 'temporary' \
+        | busybox awk '{print $2}' \
+        | busybox cut -d/ -f1 \
+        | busybox cut -d: -f1-4 \
+        | busybox head -1
+}
+
+# detect_wan: 优先使用默认路由接口，其次遍历候选 WAN 接口
 detect_wan() {
     WAN_ACTIVE=""
     PREFIX=""
+    # 1. 优先检查 IPv6 默认路由所在的接口（反映系统实际选择的 WAN）
+    DEFAULT_IFACE=$(ip -6 route show default 2>/dev/null | busybox awk '{print $5}' | busybox head -1)
+    if [ -n "$DEFAULT_IFACE" ]; then
+        PREF=$(_extract_prefix "$DEFAULT_IFACE")
+        if [ -n "$PREF" ]; then
+            WAN_ACTIVE="$DEFAULT_IFACE"
+            PREFIX="$PREF"
+            return 0
+        fi
+    fi
+    # 2. 回退到候选接口列表
     for iface in $IFACE_WAN; do
-        PREF=$(ip -6 addr show "$iface" 2>/dev/null \
-            | busybox grep 'scope global' \
-            | busybox awk '{print $2}' \
-            | busybox cut -d/ -f1 \
-            | busybox cut -d: -f1-4 \
-            | busybox head -1)
+        PREF=$(_extract_prefix "$iface")
         if [ -n "$PREF" ]; then
             WAN_ACTIVE="$iface"
             PREFIX="$PREF"
@@ -63,11 +82,22 @@ start() {
     echo "[*] WAN prefix: ${PREFIX}::/64"
 
     # Clean up stale state from a previous WAN/prefix (handles WAN switch)
+    OLD_PREFIX_FOR_RA=""
     SAVED_WAN=""; SAVED_PREFIX=""
     [ -f "$STATEFILE" ] && . "$STATEFILE"
     if [ -n "$SAVED_PREFIX" ] && [ "$SAVED_PREFIX" != "$PREFIX" ]; then
         echo "[*] WAN switched: cleaning old prefix ${SAVED_PREFIX}::/64"
-        ip -6 addr del "${SAVED_PREFIX}::1/64" dev "$IFACE_UP" 2>/dev/null
+        OLD_PREFIX_FOR_RA="$SAVED_PREFIX"
+        # 删除 bridge1 上所有旧前缀地址（::1 网关 + 内核自动分配的 SLAAC 地址）
+        ip -6 addr show "$IFACE_UP" 2>/dev/null \
+            | busybox grep 'scope global' \
+            | busybox awk '{print $2}' \
+            | busybox cut -d/ -f1 \
+            | while read addr; do
+                case "$addr" in
+                    "${SAVED_PREFIX}:"*) ip -6 addr del "$addr/64" dev "$IFACE_UP" 2>/dev/null ;;
+                esac
+            done
         # Clean NDP proxy on ALL candidate WAN interfaces (old WAN may differ)
         for w in $IFACE_WAN; do
             ip -6 neigh show proxy dev "$w" 2>/dev/null \
@@ -76,6 +106,12 @@ start() {
                     ip -6 neigh del proxy "$a" dev "$w" 2>/dev/null
                 done
         done
+        # Kill old RA sender so it restarts with deprecation prefix
+        if [ -f "$PIDFILE" ]; then
+            kill $(cat "$PIDFILE") 2>/dev/null
+            rm -f "$PIDFILE"
+            echo "[*] Old RA sender killed (will restart with prefix deprecation)"
+        fi
     fi
 
     ip -6 addr add "${PREFIX}::1/64" dev "$IFACE_UP" 2>/dev/null
@@ -97,12 +133,22 @@ start() {
 
     ip -6 neigh add proxy "${PREFIX}::1" dev "$WAN_ACTIVE" 2>/dev/null
 
-    if [ -f "$PIDFILE" ] && kill -0 $(cat "$PIDFILE") 2>/dev/null; then
-        echo "[*] RA already running (PID $(cat $PIDFILE))"
-    else
-        busybox setsid "$RA_BIN" "$IFACE_UP" "${PREFIX}::" "$RA_INTERVAL" "$DNS_SERVERS" 0<&- >/dev/null 2>&1 &
-        echo $! > "$PIDFILE"
-        echo "[*] RA sender started (PID $(cat $PIDFILE))"
+    # Kill ALL existing send_ra processes before starting new one
+    # (prevents multiple RA senders from conflicting)
+    ps | busybox grep send_ra | busybox grep -v grep | busybox awk '{print $2}' | while read pid; do
+        kill "$pid" 2>/dev/null
+    done
+    rm -f "$PIDFILE"
+    # 旧前缀参数：补全为完整 IPv6 地址格式（PREFIX 是 4 段，需加 ::）
+    OLD_PREFIX_ARG=""
+    if [ -n "$OLD_PREFIX_FOR_RA" ]; then
+        OLD_PREFIX_ARG="${OLD_PREFIX_FOR_RA}::"
+    fi
+    busybox setsid "$RA_BIN" "$IFACE_UP" "${PREFIX}::" "$RA_INTERVAL" "$DNS_SERVERS" "$OLD_PREFIX_ARG" 0<&- >/dev/null 2>&1 &
+    echo $! > "$PIDFILE"
+    echo "[*] RA sender started (PID $(cat $PIDFILE))"
+    if [ -n "$OLD_PREFIX_FOR_RA" ]; then
+        echo "[*] Deprecating old prefix: ${OLD_PREFIX_FOR_RA}::/64 (lifetime=0)"
     fi
 
     if [ "$DHCP6_ENABLE" = "1" ]; then
@@ -122,6 +168,14 @@ start() {
         echo $! > "$NDPIDFILE"
         echo "[*] NDP proxy loop started (PID $(cat $NDPIDFILE))"
     fi
+    # WAN 切换监控（检测到 WAN 接口/前缀变化时自动 restart）
+    if [ -f "$WATCHPIDFILE" ] && kill -0 $(cat "$WATCHPIDFILE") 2>/dev/null; then
+        echo "[*] Watch loop already running (PID $(cat $WATCHPIDFILE))"
+    else
+        WATCH_INTERVAL="$WATCH_INTERVAL" busybox setsid sh "$0" _watch 0<&- >/dev/null 2>&1 &
+        echo $! > "$WATCHPIDFILE"
+        echo "[*] Watch loop started (PID $(cat $WATCHPIDFILE))"
+    fi
     echo "SAVED_WAN=$WAN_ACTIVE" > "$STATEFILE"
     echo "SAVED_PREFIX=$PREFIX" >> "$STATEFILE"
     echo "[*] IPv6 tethering is ACTIVE"
@@ -137,38 +191,90 @@ _ndp() {
             | busybox grep -v FAILED \
             | busybox awk '{print $1}' \
             | while read addr; do
-                # Only proxy addresses in current prefix (skip stale addrs from old WAN)
-                case "$addr" in
-                    "${PREFIX}:"*) ;;
-                    *) continue ;;
-                esac
+                # 跳过网关自身地址
                 case "$addr" in
                     "${PREFIX}::1") continue ;;
                 esac
-                if ! ip -6 neigh show proxy dev "$WAN_ACTIVE" 2>/dev/null | busybox grep -qw "$addr"; then
-                    ip -6 neigh add proxy "$addr" dev "$WAN_ACTIVE" 2>/dev/null
-                    echo "[ndp] +proxy $addr"
-                fi
+                case "$addr" in
+                    "${PREFIX}:"*)
+                        # 当前前缀的地址：直接代理
+                        if ! ip -6 neigh show proxy dev "$WAN_ACTIVE" 2>/dev/null | busybox grep -qw "$addr"; then
+                            ip -6 neigh add proxy "$addr" dev "$WAN_ACTIVE" 2>/dev/null
+                            echo "[ndp] +proxy $addr"
+                        fi
+                        ;;
+                    *)
+                        # 旧前缀的地址：提取主机标识符，推算当前前缀的地址并代理
+                        # 这样 WAN 切换后能自动代理客户端的新前缀地址
+                        HOST_ID=$(echo "$addr" | busybox awk -F: '{print $5":"$6":"$7":"$8}')
+                        if [ -n "$HOST_ID" ]; then
+                            NEW_ADDR="${PREFIX}:${HOST_ID}"
+                            case "$NEW_ADDR" in
+                                "${PREFIX}::1") continue ;;
+                            esac
+                            if ! ip -6 neigh show proxy dev "$WAN_ACTIVE" 2>/dev/null | busybox grep -qw "$NEW_ADDR"; then
+                                ip -6 neigh add proxy "$NEW_ADDR" dev "$WAN_ACTIVE" 2>/dev/null
+                                echo "[ndp] +proxy $NEW_ADDR (derived from $addr)"
+                            fi
+                        fi
+                        ;;
+                esac
             done
         sleep "$NDP_INTERVAL"
     done
 }
 
+# _watch: 持续监控 WAN 接口/前缀变化，检测到变化时自动 restart 服务
+_watch() {
+    WATCH_INTERVAL="${WATCH_INTERVAL:-10}"
+    while true; do
+        sleep "$WATCH_INTERVAL"
+        # 读取上次保存的状态
+        SAVED_WAN=""; SAVED_PREFIX=""
+        [ -f "$STATEFILE" ] && . "$STATEFILE"
+        [ -z "$SAVED_WAN" ] && continue
+        # 检测当前 WAN
+        detect_wan
+        [ -z "$WAN_ACTIVE" ] && continue
+        # WAN 接口或前缀发生变化 → 触发 restart
+        if [ "$WAN_ACTIVE" != "$SAVED_WAN" ] || [ "$PREFIX" != "$SAVED_PREFIX" ]; then
+            echo "[watch] WAN changed: $SAVED_WAN/$SAVED_PREFIX -> $WAN_ACTIVE/$PREFIX, restarting..." > /dev/kmsg 2>/dev/null
+            # restart 会杀掉所有进程（包括本 watch），然后 start 会重新启动 watch
+            sh "$0" restart 0<&- >/dev/null 2>&1
+            exit 0
+        fi
+    done
+}
+
 stop() {
+    # Kill RA sender by PIDFILE, then sweep ALL remaining send_ra processes
+    # (prevents zombie RA processes from conflicting with new one)
     if [ -f "$PIDFILE" ]; then
         kill $(cat "$PIDFILE") 2>/dev/null
         rm -f "$PIDFILE"
-        echo "[*] RA sender stopped"
     fi
+    ps | busybox grep send_ra | busybox grep -v grep | busybox awk '{print $2}' | while read pid; do
+        kill "$pid" 2>/dev/null
+    done
+    echo "[*] RA sender stopped"
     if [ -f "$DHCP6PIDFILE" ]; then
         kill $(cat "$DHCP6PIDFILE") 2>/dev/null
         rm -f "$DHCP6PIDFILE"
         echo "[*] DHCPv6 server stopped"
     fi
+    # Kill ALL dhcp6_server processes
+    ps | busybox grep dhcp6_server | busybox grep -v grep | busybox awk '{print $2}' | while read pid; do
+        kill "$pid" 2>/dev/null
+    done
     if [ -f "$NDPIDFILE" ]; then
         kill $(cat "$NDPIDFILE") 2>/dev/null
         rm -f "$NDPIDFILE"
         echo "[*] NDP loop stopped"
+    fi
+    if [ -f "$WATCHPIDFILE" ]; then
+        kill $(cat "$WATCHPIDFILE") 2>/dev/null
+        rm -f "$WATCHPIDFILE"
+        echo "[*] Watch loop stopped"
     fi
     # Read saved state (may differ from current detect_wan if WAN switched)
     SAVED_WAN=""; SAVED_PREFIX=""
@@ -182,10 +288,23 @@ stop() {
             done
     done
     echo "[*] NDP proxy entries cleaned"
-    [ -n "$SAVED_PREFIX" ] && ip -6 addr del "${SAVED_PREFIX}::1/64" dev "$IFACE_UP" 2>/dev/null
-    detect_wan
-    [ -n "$PREFIX" ] && [ "$PREFIX" != "$SAVED_PREFIX" ] && ip -6 addr del "${PREFIX}::1/64" dev "$IFACE_UP" 2>/dev/null
-    rm -f "$STATEFILE"
+    # 删除 bridge1 上所有 SAVED_PREFIX 和当前 PREFIX 的 global 地址
+    for pfx in "$SAVED_PREFIX" "$PREFIX"; do
+        [ -z "$pfx" ] && continue
+        ip -6 addr show "$IFACE_UP" 2>/dev/null \
+            | busybox grep 'scope global' \
+            | busybox awk '{print $2}' \
+            | busybox cut -d/ -f1 \
+            | while read addr; do
+                case "$addr" in
+                    "${pfx}:"*) ip -6 addr del "$addr/64" dev "$IFACE_UP" 2>/dev/null ;;
+                esac
+            done
+    done
+    # 注意：restart 时保留 STATEFILE，让 start 能获取旧前缀并发送弃用 RA
+    if [ "$1" != "--keep-state" ]; then
+        rm -f "$STATEFILE"
+    fi
     echo "[*] IPv6 tethering STOPPED"
 }
 
@@ -214,6 +333,12 @@ status() {
     else
         echo "  Not running"
     fi
+    echo "=== Watch loop ==="
+    if [ -f "$WATCHPIDFILE" ] && kill -0 $(cat "$WATCHPIDFILE") 2>/dev/null; then
+        echo "  Running (PID $(cat $WATCHPIDFILE))"
+    else
+        echo "  Not running"
+    fi
     echo "=== $IFACE_UP IPv6 ==="
     ip -6 addr show "$IFACE_UP" 2>/dev/null | busybox grep inet6
     if [ -n "$WAN_ACTIVE" ]; then
@@ -235,9 +360,10 @@ status() {
 case "$1" in
     start)  start ;;
     stop)   stop ;;
-    restart) stop; sleep 1; start ;;
+    restart) stop --keep-state; sleep 1; start ;;
     status) status ;;
     _ndp)   _ndp ;;
+    _watch) _watch ;;
     _getprefix) get_prefix ;;
     *) echo "Usage: $0 {start|stop|restart|status}" ;;
 esac

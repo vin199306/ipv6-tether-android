@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"encoding/binary"
@@ -30,11 +30,24 @@ func main() {
 	if len(os.Args) >= 5 {
 		dnsStr = os.Args[4]
 	}
+	// Optional 6th arg: old prefix to deprecate (lifetime=0, forces clients to drop old address)
+	oldPrefixStr := ""
+	if len(os.Args) >= 6 {
+		oldPrefixStr = os.Args[5]
+	}
 
 	prefixIP := net.ParseIP(prefixStr).To16()
 	if prefixIP == nil {
 		fmt.Fprintln(os.Stderr, "invalid prefix")
 		os.Exit(1)
+	}
+
+	var oldPrefixIP net.IP
+	if oldPrefixStr != "" {
+		oldPrefixIP = net.ParseIP(oldPrefixStr).To16()
+		if oldPrefixIP == nil {
+			fmt.Fprintf(os.Stderr, "warning: invalid old prefix %s, ignoring\n", oldPrefixStr)
+		}
 	}
 
 	iface, err := net.InterfaceByName(ifaceName)
@@ -68,9 +81,12 @@ func main() {
 	}
 
 	mcastDst := &net.IPAddr{IP: net.ParseIP("ff02::1"), Zone: ifaceName}
-	ra := buildRA(iface.HardwareAddr, prefixIP, dnsServers)
+	ra := buildRA(iface.HardwareAddr, prefixIP, dnsServers, oldPrefixIP)
 
 	fmt.Printf("send_ra: iface=%s prefix=%s interval=%ds (mcast+unicast)\n", ifaceName, prefixStr, interval)
+	if oldPrefixIP != nil {
+		fmt.Printf("send_ra: deprecating old prefix=%s (lifetime=0)\n", oldPrefixStr)
+	}
 
 	cm := &ipv6.ControlMessage{HopLimit: 255}
 	for {
@@ -124,7 +140,7 @@ func getLinkLocalClients(ifaceName string) []net.IP {
 	return clients
 }
 
-func buildRA(srcMAC net.HardwareAddr, prefix []byte, dnsServers []net.IP) []byte {
+func buildRA(srcMAC net.HardwareAddr, prefix []byte, dnsServers []net.IP, oldPrefix []byte) []byte {
 	buf := make([]byte, 0, 64)
 	buf = append(buf, 134, 0, 0, 0)
 	// RA flags: M=0, O=0 (pure SLAAC) - addr/route/DNS all via RA
@@ -139,6 +155,17 @@ func buildRA(srcMAC net.HardwareAddr, prefix []byte, dnsServers []net.IP) []byte
 	buf = append(buf, b4[:]...)
 	buf = append(buf, 0, 0, 0, 0)
 	buf = append(buf, prefix...)
+	// Deprecated prefix info (if any): same structure but lifetime=0
+	// This forces clients to immediately remove the old address (RFC 4861)
+	if oldPrefix != nil {
+		buf = append(buf, 3, 4, 64, 0xC0)
+		binary.BigEndian.PutUint32(b4[:], 0) // valid_lifetime=0 → delete address
+		buf = append(buf, b4[:]...)
+		binary.BigEndian.PutUint32(b4[:], 0) // preferred_lifetime=0 → deprecated
+		buf = append(buf, b4[:]...)
+		buf = append(buf, 0, 0, 0, 0)
+		buf = append(buf, oldPrefix...)
+	}
 	// MTU option: type=5, length=1
 	buf = append(buf, 5, 1, 0, 0)
 	binary.BigEndian.PutUint32(b4[:], 1280)
