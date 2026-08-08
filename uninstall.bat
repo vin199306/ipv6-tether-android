@@ -8,7 +8,13 @@ echo.
 
 where adb >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] adb not found.
+    echo.
+    echo ##########################################
+    echo ##                                      ##
+    echo ##   [FAILED] adb not found             ##
+    echo ##                                      ##
+    echo ##########################################
+    echo.
     pause
     exit /b 1
 )
@@ -21,5 +27,12 @@ adb shell "su -c 'rm -f /data/local/tmp/send_ra /data/local/tmp/dhcp6_server /da
 adb shell "su -c 'rm -f /data/adb/service.d/ipv6_tether_boot.sh'"
 
 echo.
-echo Uninstall done.
+echo ##########################################
+echo ##                                      ##
+echo ##   [SUCCESS] Uninstall completed      ##
+echo ##                                      ##
+echo ##   All files and services removed     ##
+echo ##                                      ##
+echo ##########################################
+echo.
 pause

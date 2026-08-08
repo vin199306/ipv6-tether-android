@@ -9,9 +9,18 @@ echo.
 REM Check adb
 where adb >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] adb not found. Install Android Platform Tools first.
-    echo         https://developer.android.com/studio/releases/platform-tools
-    echo         Add adb.exe folder to PATH.
+    echo.
+    echo ##########################################
+    echo ##                                      ##
+    echo ##   [FAILED] adb not found             ##
+    echo ##                                      ##
+    echo ##   Install Android Platform Tools:    ##
+    echo ##   https://developer.android.com/     ##
+    echo ##   studio/releases/platform-tools     ##
+    echo ##   Add adb.exe folder to PATH         ##
+    echo ##                                      ##
+    echo ##########################################
+    echo.
     pause
     exit /b 1
 )
@@ -20,10 +29,18 @@ REM Check device
 echo [1/4] Checking device connection...
 adb get-state >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] No device detected. Check:
-    echo         1. USB connected
-    echo         2. USB debugging enabled
-    echo         3. Authorized this PC on phone
+    echo.
+    echo ##########################################
+    echo ##                                      ##
+    echo ##   [FAILED] No device detected        ##
+    echo ##                                      ##
+    echo ##   Check:                             ##
+    echo ##   1. USB connected                   ##
+    echo ##   2. USB debugging enabled           ##
+    echo ##   3. Authorized this PC on phone     ##
+    echo ##                                      ##
+    echo ##########################################
+    echo.
     pause
     exit /b 1
 )
@@ -43,6 +60,17 @@ adb push "%SCRIPT_DIR%\ipv6_tether.sh" /data/local/tmp/ipv6_tether.sh
 adb push "%SCRIPT_DIR%\ipv6_tether_boot.sh" /data/local/tmp/ipv6_tether_boot.sh
 adb push "%SCRIPT_DIR%\config.conf" /data/local/tmp/config.conf
 adb push "%SCRIPT_DIR%\deploy.sh" /data/local/tmp/deploy.sh
+if errorlevel 1 (
+    echo.
+    echo ##########################################
+    echo ##                                      ##
+    echo ##   [FAILED] Push files failed         ##
+    echo ##                                      ##
+    echo ##########################################
+    echo.
+    pause
+    exit /b 1
+)
 echo       Push done.
 echo.
 
@@ -52,19 +80,58 @@ echo       Please grant root on phone if prompted...
 adb shell su -c sh /data/local/tmp/deploy.sh
 if errorlevel 1 (
     echo.
-    echo [ERROR] Deploy failed. Possible reasons:
-    echo         1. Device not rooted
-    echo         2. Magisk not installed (no busybox)
-    echo         3. Root not granted on phone
+    echo ##########################################
+    echo ##                                      ##
+    echo ##   [FAILED] Deploy failed             ##
+    echo ##                                      ##
+    echo ##   Possible reasons:                  ##
+    echo ##   1. Device not rooted               ##
+    echo ##   2. Magisk not installed            ##
+    echo ##   3. Root not granted on phone       ##
+    echo ##                                      ##
+    echo ##   Manual check:                      ##
+    echo ##   adb shell su -c sh /data/local/    ##
+    echo ##   tmp/deploy.sh                      ##
+    echo ##                                      ##
+    echo ##########################################
     echo.
-    echo Manual check: adb shell su -c sh /data/local/tmp/deploy.sh
     pause
     exit /b 1
 )
 echo.
 
-echo [4/4] Deploy finished.
-echo.
+REM Verify service is running
+echo [4/4] Verifying service...
+adb shell su -c sh /data/local/tmp/ipv6_tether.sh status > "%TEMP%\ipv6_status.txt" 2>&1
+findstr /C:"ACTIVE" "%TEMP%\ipv6_status.txt" >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo ##########################################
+    echo ##                                      ##
+    echo ##   [WARNING] Service may not running  ##
+    echo ##                                      ##
+    echo ##   Check status manually:             ##
+    echo ##   adb shell su -c sh /data/local/    ##
+    echo ##   tmp/ipv6_tether.sh status          ##
+    echo ##                                      ##
+    echo ##########################################
+    echo.
+) else (
+    echo.
+    echo ##########################################
+    echo ##                                      ##
+    echo ##   [SUCCESS] Deploy completed!        ##
+    echo ##                                      ##
+    echo ##   IPv6 tethering is ACTIVE           ##
+    echo ##                                      ##
+    echo ##   Client test:                       ##
+    echo ##   open https://test-ipv6.com/        ##
+    echo ##   Expected score: 10/10              ##
+    echo ##                                      ##
+    echo ##########################################
+    echo.
+)
+
 echo ==========================================
 echo   Commands
 echo ==========================================
