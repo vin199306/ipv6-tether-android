@@ -1,6 +1,7 @@
 # 编译产物（ARM 二进制，不纳入版本控制）
-send_ra
-dhcp6_server
+# 注意: 只排除无扩展名的二进制，保留 send_ra/ dhcp6_server/ 源码目录
+/send_ra_bin
+/dhcp6_server_bin
 *.exe
 *.dll
 *.so
