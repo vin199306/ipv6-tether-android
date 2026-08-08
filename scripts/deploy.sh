@@ -84,13 +84,18 @@ if [ "$BOOT_AUTOSTART" = "1" ]; then
         if [ ! -f "${POST_BOOT}.bak" ]; then
             cp "$POST_BOOT" "${POST_BOOT}.bak"
         fi
-        # Remove old injection (if redeploying) then re-add
-        # Use grep to check if already injected
-        if busybox grep -q "$AUTOSTART_MARKER" "$POST_BOOT" 2>/dev/null; then
-            # Already injected, remove old lines first
-            busybox sed -i "/${AUTOSTART_MARKER}/,+1d" "$POST_BOOT" 2>/dev/null
+        # Remove ALL old injections (handles duplicates from previous deploys)
+        # Use index() for literal string match (regex treats () as groups)
+        busybox awk -v m="$AUTOSTART_MARKER" '
+            index($0,m) { skip=2; next }
+            skip>0 { skip--; next }
+            { print }
+        ' "$POST_BOOT" > "${POST_BOOT}.new" 2>/dev/null
+        if [ -s "${POST_BOOT}.new" ]; then
+            cat "${POST_BOOT}.new" > "$POST_BOOT"
         fi
-        # Append autostart lines
+        rm -f "${POST_BOOT}.new"
+        # Append autostart lines (single injection)
         echo "" >> "$POST_BOOT"
         echo "$AUTOSTART_MARKER" >> "$POST_BOOT"
         echo "sh /data/local/tmp/ipv6_tether_boot.sh > /dev/null 2>&1 &" >> "$POST_BOOT"
