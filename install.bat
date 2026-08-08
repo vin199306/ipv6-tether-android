@@ -49,7 +49,7 @@ echo.
 REM Deploy (needs root)
 echo [3/4] Running deploy script (device must be rooted + Magisk installed)...
 echo       Please grant root on phone if prompted...
-adb shell "su -c 'sh /data/local/tmp/deploy.sh'"
+adb shell su -c sh /data/local/tmp/deploy.sh
 if errorlevel 1 (
     echo.
     echo [ERROR] Deploy failed. Possible reasons:
@@ -57,7 +57,7 @@ if errorlevel 1 (
     echo         2. Magisk not installed (no busybox)
     echo         3. Root not granted on phone
     echo.
-    echo Manual check: adb shell "su -c 'sh /data/local/tmp/deploy.sh'"
+    echo Manual check: adb shell su -c sh /data/local/tmp/deploy.sh
     pause
     exit /b 1
 )
@@ -68,9 +68,9 @@ echo.
 echo ==========================================
 echo   Commands
 echo ==========================================
-echo Status:  adb shell "su -c 'sh /data/local/tmp/ipv6_tether.sh status'"
-echo Restart: adb shell "su -c 'sh /data/local/tmp/ipv6_tether.sh restart'"
-echo Stop:    adb shell "su -c 'sh /data/local/tmp/ipv6_tether.sh stop'"
+echo Status:  adb shell su -c sh /data/local/tmp/ipv6_tether.sh status
+echo Restart: adb shell su -c sh /data/local/tmp/ipv6_tether.sh restart
+echo Stop:    adb shell su -c sh /data/local/tmp/ipv6_tether.sh stop
 echo.
 echo Client test: open https://test-ipv6.com/
 echo.
