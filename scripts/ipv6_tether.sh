@@ -12,7 +12,8 @@ DHCP6PIDFILE="/data/local/tmp/ipv6_dhcp6.pid"
 
 # 默认值（config 不存在时使用）
 IFACE_UP="bridge1"
-IFACE_WAN="rmnet_data0"
+# IFACE_WAN 支持多个接口（空格分隔），按优先级自动检测哪个有 IPv6
+IFACE_WAN="rmnet_data0 wlan0"
 RA_INTERVAL="3"
 DNS_SERVERS="2400:3200::1,2400:3200:baba::1"
 DHCP6_ENABLE="1"
@@ -21,21 +22,43 @@ NDP_INTERVAL="5"
 # 加载配置
 [ -f "$CONF" ] && . "$CONF"
 
+# WAN_ACTIVE / PREFIX: detect_wan 找到 IPv6 后自动设置
+WAN_ACTIVE=""
+PREFIX=""
+
+# detect_wan: 遍历候选 WAN 接口，找到第一个有 global IPv6 的，设置 WAN_ACTIVE 和 PREFIX
+detect_wan() {
+    WAN_ACTIVE=""
+    PREFIX=""
+    for iface in $IFACE_WAN; do
+        PREF=$(ip -6 addr show "$iface" 2>/dev/null \
+            | busybox grep 'scope global' \
+            | busybox awk '{print $2}' \
+            | busybox cut -d/ -f1 \
+            | busybox cut -d: -f1-4 \
+            | busybox head -1)
+        if [ -n "$PREF" ]; then
+            WAN_ACTIVE="$iface"
+            PREFIX="$PREF"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# get_prefix: 输出 prefix（供 _getprefix 子命令和命令替换使用）
 get_prefix() {
-    ip -6 addr show "$IFACE_WAN" 2>/dev/null \
-        | busybox grep 'scope global' \
-        | busybox awk '{print $2}' \
-        | busybox cut -d/ -f1 \
-        | busybox cut -d: -f1-4 \
-        | busybox head -1
+    detect_wan
+    [ -n "$PREFIX" ] && echo "$PREFIX"
 }
 
 start() {
-    PREFIX=$(get_prefix)
-    if [ -z "$PREFIX" ]; then
-        echo "ERROR: no global IPv6 on $IFACE_WAN"
+    detect_wan
+    if [ -z "$PREFIX" ] || [ -z "$WAN_ACTIVE" ]; then
+        echo "ERROR: no global IPv6 on any of: $IFACE_WAN"
         exit 1
     fi
+    echo "[*] WAN iface: $WAN_ACTIVE"
     echo "[*] WAN prefix: ${PREFIX}::/64"
 
     ip -6 addr add "${PREFIX}::1/64" dev "$IFACE_UP" 2>/dev/null
@@ -43,7 +66,7 @@ start() {
 
     echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
     echo 1 > /proc/sys/net/ipv6/conf/$IFACE_UP/forwarding
-    echo 1 > /proc/sys/net/ipv6/conf/$IFACE_WAN/proxy_ndp
+    echo 1 > /proc/sys/net/ipv6/conf/$WAN_ACTIVE/proxy_ndp
     echo 1 > /proc/sys/net/ipv6/conf/all/proxy_ndp
 
     # 关闭 bridge multicast snooping（防止组播RA被过滤）
@@ -53,9 +76,9 @@ start() {
     echo 0 > /proc/sys/net/bridge/bridge-nf-call-ip6tables 2>/dev/null
 
     # 删除 WAN 上的 /64 on-link 路由，避免与桥接接口路由冲突
-    ip -6 route del "${PREFIX}::/64" dev "$IFACE_WAN" 2>/dev/null
+    ip -6 route del "${PREFIX}::/64" dev "$WAN_ACTIVE" 2>/dev/null
 
-    ip -6 neigh add proxy "${PREFIX}::1" dev "$IFACE_WAN" 2>/dev/null
+    ip -6 neigh add proxy "${PREFIX}::1" dev "$WAN_ACTIVE" 2>/dev/null
 
     if [ -f "$PIDFILE" ] && kill -0 $(cat "$PIDFILE") 2>/dev/null; then
         echo "[*] RA already running (PID $(cat $PIDFILE))"
@@ -88,7 +111,8 @@ start() {
 _ndp() {
     NDP_INTERVAL="${NDP_INTERVAL:-5}"
     while true; do
-        PREFIX=$(get_prefix)
+        detect_wan
+        [ -z "$WAN_ACTIVE" ] && { sleep "$NDP_INTERVAL"; continue; }
         ip -6 neigh show dev "$IFACE_UP" 2>/dev/null \
             | busybox grep -v '^fe80' \
             | busybox grep -v FAILED \
@@ -97,8 +121,8 @@ _ndp() {
                 case "$addr" in
                     "${PREFIX}::1") continue ;;
                 esac
-                if ! ip -6 neigh show proxy dev "$IFACE_WAN" 2>/dev/null | busybox grep -qw "$addr"; then
-                    ip -6 neigh add proxy "$addr" dev "$IFACE_WAN" 2>/dev/null
+                if ! ip -6 neigh show proxy dev "$WAN_ACTIVE" 2>/dev/null | busybox grep -qw "$addr"; then
+                    ip -6 neigh add proxy "$addr" dev "$WAN_ACTIVE" 2>/dev/null
                     echo "[ndp] +proxy $addr"
                 fi
             done
@@ -122,20 +146,24 @@ stop() {
         rm -f "$NDPIDFILE"
         echo "[*] NDP loop stopped"
     fi
-    ip -6 neigh show proxy dev "$IFACE_WAN" 2>/dev/null \
-        | busybox awk '{print $1}' \
-        | while read addr; do
-            ip -6 neigh del proxy "$addr" dev "$IFACE_WAN" 2>/dev/null
-        done
+    detect_wan
+    if [ -n "$WAN_ACTIVE" ]; then
+        ip -6 neigh show proxy dev "$WAN_ACTIVE" 2>/dev/null \
+            | busybox awk '{print $1}' \
+            | while read addr; do
+                ip -6 neigh del proxy "$addr" dev "$WAN_ACTIVE" 2>/dev/null
+            done
+    fi
     echo "[*] NDP proxy entries cleaned"
-    PREFIX=$(get_prefix)
     [ -n "$PREFIX" ] && ip -6 addr del "${PREFIX}::1/64" dev "$IFACE_UP" 2>/dev/null
     echo "[*] IPv6 tethering STOPPED"
 }
 
 status() {
     echo "=== Config ==="
-    echo "  IFACE_UP=$IFACE_UP  IFACE_WAN=$IFACE_WAN"
+    echo "  IFACE_UP=$IFACE_UP  IFACE_WAN(candidates)=$IFACE_WAN"
+    detect_wan
+    echo "  WAN_ACTIVE=$WAN_ACTIVE  PREFIX=${PREFIX}::"
     echo "  RA_INTERVAL=$RA_INTERVAL  DHCP6_ENABLE=$DHCP6_ENABLE"
     echo "  DNS=$DNS_SERVERS"
     echo "=== RA sender ==="
@@ -158,13 +186,19 @@ status() {
     fi
     echo "=== $IFACE_UP IPv6 ==="
     ip -6 addr show "$IFACE_UP" 2>/dev/null | busybox grep inet6
-    echo "=== NDP proxy entries ==="
-    ip -6 neigh show proxy dev "$IFACE_WAN" 2>/dev/null
+    if [ -n "$WAN_ACTIVE" ]; then
+        echo "=== NDP proxy entries (dev $WAN_ACTIVE) ==="
+        ip -6 neigh show proxy dev "$WAN_ACTIVE" 2>/dev/null
+    else
+        echo "=== NDP proxy entries (no WAN active) ==="
+    fi
     echo "=== $IFACE_UP neighbors ==="
     ip -6 neigh show dev "$IFACE_UP" 2>/dev/null
     echo "=== forwarding ==="
     echo "  all: $(busybox cat /proc/sys/net/ipv6/conf/all/forwarding)"
-    echo "  proxy_ndp($IFACE_WAN): $(busybox cat /proc/sys/net/ipv6/conf/$IFACE_WAN/proxy_ndp)"
+    if [ -n "$WAN_ACTIVE" ]; then
+        echo "  proxy_ndp($WAN_ACTIVE): $(busybox cat /proc/sys/net/ipv6/conf/$WAN_ACTIVE/proxy_ndp)"
+    fi
     echo "  mcast_snoop: $(busybox cat /sys/devices/virtual/net/$IFACE_UP/bridge/multicast_snooping 2>/dev/null)"
 }
 

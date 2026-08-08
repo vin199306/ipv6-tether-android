@@ -5,6 +5,9 @@
 
 TMP="/data/local/tmp"
 MAGISK_SVC="/data/adb/service.d"
+MAGISK_PFD="/data/adb/post-fs-data.d"
+POST_BOOT="/system/etc/init.qcom.post_boot.sh"
+AUTOSTART_MARKER="# IPv6 tether autostart (added by ipv6-tether-android)"
 
 echo "=========================================="
 echo "  IPv6 Tethering Deploy (Android 4.4)"
@@ -68,24 +71,64 @@ cp "$TMP/config.conf" "$TMP/ipv6_config.conf"
 # Load config
 . "$TMP/ipv6_config.conf"
 
-echo "[3/5] Installing Magisk autostart..."
+echo "[3/5] Installing autostart..."
 if [ "$BOOT_AUTOSTART" = "1" ]; then
+    # Primary: inject into /system/etc/init.qcom.post_boot.sh (most reliable on Android 4.4)
+    # This script is executed by init.qcom.rc service qcom-post-boot on boot.
+    # Magisk service.d/post-fs-data.d are unreliable on Android 4.4 (may not trigger).
+    POST_BOOT_OK=0
+    if [ -f "$POST_BOOT" ]; then
+        # Remount /system rw if needed
+        mount -o rw,remount /system 2>/dev/null
+        # Backup original if not already backed up
+        if [ ! -f "${POST_BOOT}.bak" ]; then
+            cp "$POST_BOOT" "${POST_BOOT}.bak"
+        fi
+        # Remove old injection (if redeploying) then re-add
+        # Use grep to check if already injected
+        if busybox grep -q "$AUTOSTART_MARKER" "$POST_BOOT" 2>/dev/null; then
+            # Already injected, remove old lines first
+            busybox sed -i "/${AUTOSTART_MARKER}/,+1d" "$POST_BOOT" 2>/dev/null
+        fi
+        # Append autostart lines
+        echo "" >> "$POST_BOOT"
+        echo "$AUTOSTART_MARKER" >> "$POST_BOOT"
+        echo "sh /data/local/tmp/ipv6_tether_boot.sh > /dev/null 2>&1 &" >> "$POST_BOOT"
+        if busybox grep -q "$AUTOSTART_MARKER" "$POST_BOOT" 2>/dev/null; then
+            echo "  Injected autostart into $POST_BOOT"
+            POST_BOOT_OK=1
+        else
+            echo "  WARNING: failed to inject into $POST_BOOT"
+        fi
+    else
+        echo "  WARNING: $POST_BOOT not found"
+    fi
+
+    # Fallback: also install to Magisk service.d and post-fs-data.d (in case post_boot.sh absent)
     if [ -d "$MAGISK_SVC" ]; then
         cp "$TMP/ipv6_tether_boot.sh" "$MAGISK_SVC/ipv6_tether_boot.sh"
         chmod 755 "$MAGISK_SVC/ipv6_tether_boot.sh"
-        echo "  Installed to $MAGISK_SVC/ipv6_tether_boot.sh"
-    else
+        echo "  Also installed to $MAGISK_SVC/ipv6_tether_boot.sh (fallback)"
+    fi
+    if [ -d "$MAGISK_PFD" ]; then
+        cp "$TMP/ipv6_tether_boot.sh" "$MAGISK_PFD/ipv6_tether_boot.sh"
+        chmod 755 "$MAGISK_PFD/ipv6_tether_boot.sh"
+        echo "  Also installed to $MAGISK_PFD/ipv6_tether_boot.sh (fallback)"
+    fi
+
+    if [ "$POST_BOOT_OK" != "1" ] && [ ! -d "$MAGISK_SVC" ] && [ ! -d "$MAGISK_PFD" ]; then
         echo ""
         echo "##########################################"
         echo "##                                      ##"
-        echo "##   [WARNING] Magisk service.d absent  ##"
+        echo "##   [WARNING] No autostart installed   ##"
         echo "##                                      ##"
-        echo "##   $MAGISK_SVC not found"
-        echo "##   Magisk not installed or too old    ##"
-        echo "##   Skipped autostart                  ##"
+        echo "##   Neither post_boot.sh nor Magisk    ##"
+        echo "##   dirs available. Manual start only. ##"
         echo "##                                      ##"
         echo "##########################################"
     fi
+    # Clean up old lockfile so boot script can start fresh after reboot
+    rm -f "$TMP/ipv6_boot.lock"
 else
     echo "  BOOT_AUTOSTART=0, skipped autostart"
 fi
