@@ -91,8 +91,6 @@ jobs:
         with:
           files: |
             ipv6-tether-android.zip
-            dist/send_ra
-            dist/dhcp6_server
           generate_release_notes: true
           body: |
             ## IPv6 Tethering for Android 4.4
