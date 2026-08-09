@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# dropbear_setup.sh - 在 Android 4.4 上配置 dropbear SSH (root 密钥登录)
+# dropbear_setup.sh - 在 Android 4.4 上配置 dropbear SSH (root 密钥 + 密码登录)
 # 用法: su -c 'sh /data/local/tmp/dropbear_setup.sh start|stop|status'
 # 依赖: dropbear (静态 musl multi-call) 已推送至 /data/local/tmp/dropbear
 DB="/data/local/tmp/dropbear"
@@ -39,24 +39,25 @@ DB_ME="$$"
 case "$1" in
     start)
         _ensure_deps
-        if [ ! -f "$AUTH" ]; then
-            echo "ERROR: $AUTH missing (put your SSH public key here)"
-            exit 1
+        # 存在 authorized_keys 则启用密钥登录；不存在时仅密码登录
+        if [ -f "$AUTH" ]; then
+            chmod 600 "$AUTH"
+        else
+            echo "[*] warning: $AUTH missing, password-only auth"
         fi
-        chmod 600 "$AUTH"
         # 杀掉所有旧 dropbear 进程
         ps | busybox grep "dropbear" | busybox grep -v grep | busybox awk '{print $2}' | while read p; do
             [ "$p" != "$DB_ME" ] && kill "$p" 2>/dev/null
         done
         sleep 1
-        # -s 禁用密码, -R 自动生成缺失 hostkey, -E 日志到 stderr
-        busybox setsid "$DB" -p "$PORT" -r "$KEY" -R -s -E 0<&- >/dev/null 2>&1 &
+        # -R 自动生成缺失 hostkey, -E 日志到 stderr（去掉 -s 启用密码登录）
+        busybox setsid "$DB" -p "$PORT" -r "$KEY" -R -E 0<&- >/dev/null 2>&1 &
         sleep 1
         if [ "$(_is_running)" = "yes" ]; then
             echo "[*] dropbear running on port $PORT"
         else
             echo "ERROR: dropbear failed to start"
-            "$DB" -p "$PORT" -r "$KEY" -R -s -E
+            "$DB" -p "$PORT" -r "$KEY" -R -E
         fi
         ;;
     stop)
