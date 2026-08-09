@@ -47,6 +47,29 @@ jobs:
           cd dhcp6_server
           go build -ldflags="-s -w" -o ../dist/dhcp6_server dhcp6_server.go
 
+      # dropbear (SSH server) - static musl build for Android (no Bionic dependency)
+      - name: Build dropbear (ARMv7 static musl)
+        run: |
+          set -e
+          # musl.cc cross toolchain for ARM hard-float
+          wget -q https://musl.cc/arm-linux-musleabihf-cross.tgz
+          tar xzf arm-linux-musleabihf-cross.tgz
+          export PATH="$PWD/arm-linux-musleabihf-cross/bin:$PATH"
+          # dropbear source (latest stable release tag on GitHub)
+          wget -q https://github.com/mkj/dropbear/archive/refs/tags/DROPBEAR_2024.86.tar.gz
+          tar xzf DROPBEAR_2024.86.tar.gz
+          cd dropbear-DROPBEAR_2024.86
+          ./configure --host=arm-linux-musleabihf \
+            --disable-zlib --disable-pam --disable-shadow \
+            --disable-lastlog --disable-utmp --disable-utmpx \
+            --disable-wtmp --disable-wtmpx \
+            --disable-loginfunc --disable-pututline --disable-pututxline \
+            --disable-putenv --enable-static
+          make PROGRAMS="dropbear dropbearkey" MULTI=1 STATIC=1
+          cp dropbearmulti ../dist/dropbear
+          cd ..
+          ls -lh dist/dropbear
+
       - name: List build artifacts
         run: ls -lh dist/
 
@@ -56,6 +79,7 @@ jobs:
           mkdir -p ipv6-tether-pack
           cp dist/send_ra ipv6-tether-pack/
           cp dist/dhcp6_server ipv6-tether-pack/
+          cp dist/dropbear ipv6-tether-pack/
           cp scripts/ipv6_tether.sh ipv6-tether-pack/
           cp scripts/ipv6_tether_boot.sh ipv6-tether-pack/
           cp scripts/config.conf ipv6-tether-pack/
@@ -64,7 +88,7 @@ jobs:
           cp uninstall.bat ipv6-tether-pack/
           cp README.md ipv6-tether-pack/
           # 设置 shell 脚本权限（zip 保留权限）
-          chmod 755 ipv6-tether-pack/send_ra ipv6-tether-pack/dhcp6_server
+          chmod 755 ipv6-tether-pack/send_ra ipv6-tether-pack/dhcp6_server ipv6-tether-pack/dropbear
           chmod 755 ipv6-tether-pack/ipv6_tether.sh ipv6-tether-pack/ipv6_tether_boot.sh ipv6-tether-pack/deploy.sh
           ls -lh ipv6-tether-pack/
 
@@ -110,6 +134,7 @@ jobs:
             |------|------|
             | send_ra | RA 发送器 (ARMv7) |
             | dhcp6_server | DHCPv6 服务器 (ARMv7) |
+            | dropbear | SSH 服务器 (ARMv7, 静态编译) |
             | ipv6_tether.sh | 主控脚本 |
             | ipv6_tether_boot.sh | Magisk 开机自启 |
             | config.conf | 配置文件 |
