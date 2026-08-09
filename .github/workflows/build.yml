@@ -60,6 +60,7 @@ jobs:
           tar xzf dropbear.tar.gz
           cd dropbear-DROPBEAR_2024.86
           ./configure --build=x86_64-linux-gnu --host=arm-linux-musleabihf \
+            --with-default-path="/sbin:/vendor/bin:/system/sbin:/system/bin:/system/xbin:/data/local/tmp" \
             --disable-zlib --disable-pam --disable-shadow \
             --disable-lastlog --disable-utmp --disable-utmpx \
             --disable-wtmp --disable-wtmpx \
