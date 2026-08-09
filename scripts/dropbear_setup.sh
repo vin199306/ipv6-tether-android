@@ -39,6 +39,11 @@ DB_ME="$$"
 case "$1" in
     start)
         _ensure_deps
+        # 导出完整 Android 环境，避免登录 shell 缺 PATH / mkshrc 里 getprop not found
+        export PATH=/sbin:/vendor/bin:/system/sbin:/system/bin:/system/xbin:/data/local/tmp
+        export HOME=/root
+        export HOSTNAME=android
+        export USER=root
         # 存在 authorized_keys 则启用密钥登录；不存在时仅密码登录
         if [ -f "$AUTH" ]; then
             chmod 600 "$AUTH"
