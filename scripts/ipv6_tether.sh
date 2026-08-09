@@ -100,6 +100,10 @@ start() {
                     "${SAVED_PREFIX}:"*) ip -6 addr del "$addr/64" dev "$IFACE_UP" 2>/dev/null ;;
                 esac
             done
+        # 删除旧前缀的 unreachable 路由（内核残留）
+        ip -6 route del unreachable "${SAVED_PREFIX}::/64" 2>/dev/null
+        # 删除旧前缀的低 metric 路由（防止旧前缀流量仍走 bridge1）
+        ip -6 route del "${SAVED_PREFIX}::/64" dev "$IFACE_UP" metric 100 2>/dev/null
         # Clean NDP proxy on ALL candidate WAN interfaces (old WAN may differ)
         for w in $IFACE_WAN; do
             ip -6 neigh show proxy dev "$w" 2>/dev/null \
@@ -132,6 +136,11 @@ start() {
 
     # 删除 WAN 上的 /64 on-link 路由，避免与桥接接口路由冲突
     ip -6 route del "${PREFIX}::/64" dev "$WAN_ACTIVE" 2>/dev/null
+    # 添加 bridge1 前缀路由（低 metric 100，回程流量优先走 bridge1）
+    # 配合 _ndp 循环的持续添加，抵御 netd 周期性删除。
+    # 注意：不能用 "ip -6 route del unreachable" 清理 unreachable，
+    # 该命令会误删同前缀的 metric 100 路由（Android 4.4 ip 命令行为）。
+    ip -6 route add "${PREFIX}::/64" dev "$IFACE_UP" metric 100 2>/dev/null
 
     ip -6 neigh add proxy "${PREFIX}::1" dev "$WAN_ACTIVE" 2>/dev/null
 
@@ -191,6 +200,10 @@ _ndp() {
     while true; do
         detect_wan
         [ -z "$WAN_ACTIVE" ] && { sleep "$NDP_INTERVAL"; continue; }
+        # 持续添加 bridge1 前缀路由（低 metric 100，优先于内核 unreachable 路由）。
+        # netd 会周期性删除静态路由，因此每轮重新添加，保证回程流量始终走 bridge1。
+        # 注意：不能用 "ip -6 route del unreachable" 清理，该命令会误删同前缀的所有路由。
+        ip -6 route add "${PREFIX}::/64" dev "$IFACE_UP" metric 100 2>/dev/null
         ip -6 neigh show dev "$IFACE_UP" 2>/dev/null \
             | busybox grep -v '^fe80' \
             | busybox grep -v FAILED \
@@ -318,6 +331,9 @@ stop() {
                     "${pfx}:"*) ip -6 addr del "$addr/64" dev "$IFACE_UP" 2>/dev/null ;;
                 esac
             done
+        # 删除对应前缀的 unreachable 路由和低 metric 路由
+        ip -6 route del unreachable "${pfx}::/64" 2>/dev/null
+        ip -6 route del "${pfx}::/64" dev "$IFACE_UP" metric 100 2>/dev/null
     done
     # 注意：restart 时保留 STATEFILE，让 start 能获取旧前缀并发送弃用 RA
     if [ "$1" != "--keep-state" ]; then

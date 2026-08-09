@@ -1,0 +1,7 @@
+# Force LF for shell/config files deployed to Android (CRLF breaks mksh parsing)
+*.sh   text eol=lf
+*.conf text eol=lf
+*.bat  text eol=crlf
+*.go   text eol=lf
+*.yml  text eol=lf
+*.md   text eol=lf
