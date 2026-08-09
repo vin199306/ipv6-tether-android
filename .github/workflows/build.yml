@@ -51,20 +51,20 @@ jobs:
       - name: Build dropbear (ARMv7 static musl)
         run: |
           set -e
-          # musl.cc cross toolchain for ARM hard-float
-          wget -q https://musl.cc/arm-linux-musleabihf-cross.tgz
-          tar xzf arm-linux-musleabihf-cross.tgz
+          # musl.cc cross toolchain for ARM hard-float (curl with retry, wget exit 4 on net errors)
+          curl -fsSL --retry 4 --retry-delay 2 -o musl.tgz https://musl.cc/arm-linux-musleabihf-cross.tgz
+          tar xzf musl.tgz
           export PATH="$PWD/arm-linux-musleabihf-cross/bin:$PATH"
           # dropbear source (latest stable release tag on GitHub)
-          wget -q https://github.com/mkj/dropbear/archive/refs/tags/DROPBEAR_2024.86.tar.gz
-          tar xzf DROPBEAR_2024.86.tar.gz
+          curl -fsSL --retry 4 --retry-delay 2 -o dropbear.tar.gz https://github.com/mkj/dropbear/archive/refs/tags/DROPBEAR_2024.86.tar.gz
+          tar xzf dropbear.tar.gz
           cd dropbear-DROPBEAR_2024.86
-          ./configure --host=arm-linux-musleabihf \
+          ./configure --build=x86_64-linux-gnu --host=arm-linux-musleabihf \
             --disable-zlib --disable-pam --disable-shadow \
             --disable-lastlog --disable-utmp --disable-utmpx \
             --disable-wtmp --disable-wtmpx \
             --disable-loginfunc --disable-pututline --disable-pututxline \
-            --disable-putenv --enable-static
+            --enable-static
           make PROGRAMS="dropbear dropbearkey" MULTI=1 STATIC=1
           cp dropbearmulti ../dist/dropbear
           cd ..
