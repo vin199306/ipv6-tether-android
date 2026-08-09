@@ -51,8 +51,8 @@ jobs:
       - name: Build dropbear (ARMv7 static musl)
         run: |
           set -e
-          # musl.cc cross toolchain for ARM hard-float (curl with retry, wget exit 4 on net errors)
-          curl -fsSL --retry 4 --retry-delay 2 -o musl.tgz https://musl.cc/arm-linux-musleabihf-cross.tgz
+          # musl.cc cross toolchain for ARM hard-float (GitHub mirror, musl.cc site unreliable)
+          curl -fsSL --retry 4 --retry-delay 2 -o musl.tgz https://github.com/musl-cc/musl.cc/releases/download/v0.0.1/arm-linux-musleabihf-cross.tgz
           tar xzf musl.tgz
           export PATH="$PWD/arm-linux-musleabihf-cross/bin:$PATH"
           # dropbear source (latest stable release tag on GitHub)
