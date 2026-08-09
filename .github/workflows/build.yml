@@ -66,7 +66,7 @@ jobs:
             --disable-wtmp --disable-wtmpx \
             --disable-loginfunc --disable-pututline --disable-pututxline \
             --enable-static
-          make PROGRAMS="dropbear dropbearkey" MULTI=1 STATIC=1
+          make PROGRAMS="dropbear dropbearkey scp" MULTI=1 STATIC=1
           cp dropbearmulti ../dist/dropbear
           cd ..
           ls -lh dist/dropbear

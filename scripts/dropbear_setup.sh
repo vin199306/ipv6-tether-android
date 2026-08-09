@@ -28,6 +28,8 @@ _ensure_deps() {
     # 4. root 家目录 + authorized_keys
     mkdir -p /root/.ssh
     chmod 700 /root/.ssh
+    # 5. scp 符号链接：dropbearmulti 以 "scp" 名调用时提供 SCP 传输功能
+    [ -e /data/local/tmp/scp ] || ln -s "$DB" /data/local/tmp/scp
 }
 
 # _is_running: 是否有 dropbear 进程在运行
