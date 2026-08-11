@@ -1,0 +1,94 @@
+name: Patch Boot Image
+
+# 解包 boot.img → 用 boot_patches/ 中的用户修改文件替换 ramdisk 原文件 → 重打包 → 发布 Release
+# 用户修改 boot_patches/ 下的 init.usb.rc / init.qcom.usb.rc 后推送即可触发
+on:
+  push:
+    branches: [ main ]
+    paths: [ 'boot.img', 'boot_patches/**', 'tools/**', '.github/workflows/patch_boot.yml' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unpack boot.img
+        run: |
+          python3 tools/unpack_boot.py boot.img boot_unpacked
+          echo "=== ramdisk init files ==="
+          ls -la boot_unpacked/ramdisk/init*.rc
+
+      - name: Replace files with user patches
+        run: |
+          echo "=== Files in boot_patches/ ==="
+          ls -la boot_patches/
+          echo "=== Replacing ramdisk files ==="
+          for f in boot_patches/*; do
+            fname=$(basename "$f")
+            if [ -f "boot_unpacked/ramdisk/$fname" ]; then
+              echo "Replacing ramdisk/$fname"
+              cp "$f" "boot_unpacked/ramdisk/$fname"
+            else
+              echo "WARNING: $fname not found in ramdisk, skipping"
+            fi
+          done
+          echo "=== Verify charging,none,adb block ==="
+          grep -A7 "charging,none,adb" boot_unpacked/ramdisk/init.qcom.usb.rc || true
+
+      - name: Repack boot.img
+        run: |
+          python3 tools/repack_boot.py boot.img boot_unpacked/ramdisk boot_patched.img
+          echo "=== Size comparison ==="
+          ls -lh boot.img boot_patched.img
+
+      - name: Verify patched boot.img
+        run: |
+          echo "=== Re-unpack to verify ==="
+          python3 tools/unpack_boot.py boot_patched.img boot_verify
+          echo "=== Patched charging,none,adb block ==="
+          grep -A7 "charging,none,adb" boot_verify/ramdisk/init.qcom.usb.rc || true
+
+      - name: Upload patched boot.img (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-patched
+          path: boot_patched.img
+          retention-days: 90
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: boot_patched.img
+          generate_release_notes: true
+          body: |
+            ## Patched boot.img
+
+            用户修改的 `boot_patches/` 文件已打包进 boot 镜像 ramdisk。
+
+            ### 包含修改
+
+            | 文件 | 说明 |
+            |------|------|
+            | init.usb.rc | USB 配置 |
+            | init.qcom.usb.rc | Qualcomm USB 配置（含 adb 启用） |
+
+            ### 刷入方法
+
+            ```bash
+            # 1. 备份原 boot
+            adb shell su -c "dd if=/dev/block/mmcblk0pXX of=/sdcard/boot_backup.img"
+
+            # 2. 刷入修改后的 boot
+            adb reboot bootloader
+            fastboot flash boot boot_patched.img
+            fastboot reboot
+            ```
+
+            ⚠️ 务必先备份原 boot 分区！

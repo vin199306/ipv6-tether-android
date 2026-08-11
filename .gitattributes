@@ -5,3 +5,6 @@
 *.go   text eol=lf
 *.yml  text eol=lf
 *.md   text eol=lf
+*.rc   text eol=lf
+*.py   text eol=lf
+*.img  binary
