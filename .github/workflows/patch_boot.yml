@@ -41,10 +41,6 @@ jobs:
           echo "=== Verify charging,none,adb block ==="
           grep -A7 "charging,none,adb" boot_unpacked/ramdisk/init.qcom.usb.rc || true
 
-      - name: SSH Debug Session (manual repack test)
-        uses: mxschmitt/action-tmate@v3
-        timeout-minutes: 15
-
       - name: Repack boot.img
         run: |
           python3 tools/repack_boot.py boot.img boot_unpacked/ramdisk boot_patched.img
