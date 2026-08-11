@@ -46,6 +46,16 @@ jobs:
           python3 tools/repack_boot.py boot.img boot_unpacked/ramdisk boot_patched.img
           echo "=== Size comparison ==="
           ls -lh boot.img boot_patched.img
+          echo "=== Byte-level size check ==="
+          orig=$(stat -c %s boot.img)
+          new=$(stat -c %s boot_patched.img)
+          echo "Original: $orig bytes"
+          echo "Patched:  $new bytes"
+          if [ "$orig" != "$new" ]; then
+            echo "ERROR: size mismatch! Original=$orig, Patched=$new"
+            exit 1
+          fi
+          echo "OK: sizes match"
 
       - name: Verify patched boot.img
         run: |
@@ -53,6 +63,8 @@ jobs:
           python3 tools/unpack_boot.py boot_patched.img boot_verify
           echo "=== Patched charging,none,adb block ==="
           grep -A7 "charging,none,adb" boot_verify/ramdisk/init.qcom.usb.rc || true
+          echo "=== Verify init.qcom.usb.rc has adb functions ==="
+          grep "functions rndis,adb" boot_verify/ramdisk/init.qcom.usb.rc || echo "WARNING: rndis,adb not found"
 
       - name: Upload patched boot.img (artifact)
         uses: actions/upload-artifact@v4

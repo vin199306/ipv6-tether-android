@@ -30,6 +30,7 @@ def main():
     # Read original header
     with open(src_boot, 'rb') as f:
         data = f.read()
+    src_size = len(data)  # original file size (includes padding to partition size)
 
     magic = data[0:8]
     assert magic == b'ANDROID!', f"Bad magic: {magic}"
@@ -63,8 +64,8 @@ def main():
             buf += b'\x00' * (page_size - remainder)
         return buf
 
-    # Header
-    header = bytearray(2048)  # page_size = 2048
+    # Header (page_size bytes, matches original)
+    header = bytearray(ps)
     header[0:8] = b'ANDROID!'
     struct.pack_into('<10I', header, 8,
                      len(kernel), ka, len(new_ramdisk), ra,
@@ -82,10 +83,19 @@ def main():
     if dtb:
         out += align_page(dtb, ps)
 
+    # Pad to original boot.img size (partition size) with 0x00 to match the
+    # original image's tail padding (verified: original uses 0x00 padding).
+    if src_size > len(out):
+        pad_len = src_size - len(out)
+        print(f"Padding {pad_len} bytes (0x00) to match original size {src_size}")
+        out += b'\x00' * pad_len
+    else:
+        print(f"WARNING: output {len(out)} > original {src_size}, no padding")
+
     with open(out_boot, 'wb') as f:
         f.write(out)
 
-    print(f"Written {len(out)} bytes to {out_boot}")
+    print(f"Written {len(out)} bytes to {out_boot} (original: {src_size})")
     print(f"  kernel:   {len(kernel)}")
     print(f"  ramdisk:  {len(new_ramdisk)} (was {len(orig_ramdisk)})")
     print(f"  second:   {len(second)}")
